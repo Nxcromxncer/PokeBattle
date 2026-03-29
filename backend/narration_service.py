@@ -6,32 +6,75 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_API_URL = "https://api.groq.com/openai/v1/chat/completions"
 MODEL = "llama-3.3-70b-versatile"
 
-SYSTEM_PROMPT = """You are an epic Pokémon battle narrator. Your job is to generate SHORT, DRAMATIC, 
-exciting narration for battle events. Keep it to 2-3 sentences maximum. 
-Be vivid, energetic, and capture the excitement of Pokémon battles.
-Never calculate damage yourself — only narrate what happened based on the JSON event data provided."""
+SYSTEM_PROMPT = """
+You are an official Pokémon anime battle narrator.
+
+STYLE:
+- Write like a real Pokémon anime or Pokémon Stadium commentator.
+- Energetic, cinematic, and emotionally engaging.
+- Present tense narration.
+- Focus on action, impact, and reactions.
+- Mention Pokémon names naturally.
+- Occasionally reference trainer tension or momentum.
+- Feel like a live arena broadcast or anime episode.
+
+RULES:
+- 2–3 sentences ONLY.
+- Short, punchy, vivid lines.
+- DO NOT calculate damage or invent mechanics.
+- Use ONLY facts from the event data.
+- Never output JSON, explanations, or formatting.
+- Narration text only.
+
+TONE GUIDELINES:
+- Critical hits feel explosive or shocking.
+- Super effective hits feel powerful and decisive.
+- Misses feel tense or narrowly avoided.
+- Fainting feels dramatic but heroic.
+- Battle endings feel triumphant and final.
+
+AVOID:
+- Technical/statistical language.
+- Repeating numeric values excessively.
+- Overly long descriptions.
+
+Your goal:
+Make the battle feel like a real Pokémon anime moment.
+"""
 
 def generate_narration(event: dict) -> str:
     if not GROQ_API_KEY:
         return _fallback_narration(event)
 
-    prompt = f"""Narrate this Pokémon battle event dramatically in 2-3 sentences:
+    prompt = f"""
+Create anime-style battle narration for this Pokémon battle moment.
+
+Battle Event Data:
 {json.dumps(event, indent=2)}
 
-Key facts to narrate:
-- Attacker: {event['attacker']} (trainer: {event['attacker_trainer']})
-- Move used: {event['move']}
-- Target: {event['defender']} (trainer: {event['defender_trainer']})
-- Damage dealt: {event['damage']}
-- Critical hit: {event['critical']}
-- Type effectiveness: {event['effectiveness_label']}
-- Missed: {event['missed']}
-- Target fainted: {event.get('fainted', False)}
-- Remaining HP: {event.get('remaining_hp', '?')}/{event.get('defender_max_hp', '?')}
-{f"- Battle winner: {event['winner']}" if event.get('battle_ended') else ''}
-{f"- Next Pokémon sent out: {event['new_active']}" if event.get('new_active') else ''}
+Narration Requirements:
+- Describe the action visually.
+- Emphasize motion, impact, and emotion.
+- React to effectiveness and critical hits naturally.
+- If a Pokémon faints, make it dramatic but concise.
+- If a new Pokémon appears, introduce it like an anime entrance.
+- If the battle ends, deliver a decisive closing line.
 
-Generate ONLY the narration text, nothing else."""
+Key Facts:
+Attacker: {event['attacker']} (Trainer: {event['attacker_trainer']})
+Move: {event['move']}
+Defender: {event['defender']} (Trainer: {event['defender_trainer']})
+Damage: {event['damage']}
+Critical Hit: {event['critical']}
+Effectiveness: {event['effectiveness_label']}
+Missed: {event['missed']}
+Fainted: {event.get('fainted', False)}
+Remaining HP: {event.get('remaining_hp', '?')}/{event.get('defender_max_hp', '?')}
+{f"Winner: {event['winner']}" if event.get('battle_ended') else ""}
+{f"Next Pokémon: {event['new_active']}" if event.get('new_active') else ""}
+
+Output ONLY the narration text.
+"""
 
     try:
         headers = {
