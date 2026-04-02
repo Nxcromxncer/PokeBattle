@@ -11,7 +11,7 @@ class CreateTrainerRequest(BaseModel):
 
 class AddPokemonRequest(BaseModel):
     pokemon_name: str
-    moves: List[str]  # exactly 4 move names
+    moves: List[str]
 
 @router.post("/create")
 def create_trainer(req: CreateTrainerRequest):
@@ -37,6 +37,14 @@ def get_trainer(trainer_id: int):
         raise HTTPException(status_code=404, detail="Trainer not found")
     return trainer
 
+@router.delete("/{trainer_id}")
+def delete_trainer(trainer_id: int):
+    trainer = db.get_trainer(trainer_id)
+    if not trainer:
+        raise HTTPException(status_code=404, detail="Trainer not found")
+    db.delete_trainer(trainer_id)
+    return {"message": f"Trainer '{trainer['name']}' deleted"}
+
 @router.post("/{trainer_id}/add-pokemon")
 def add_pokemon(trainer_id: int, req: AddPokemonRequest):
     trainer = db.get_trainer(trainer_id)
@@ -47,13 +55,10 @@ def add_pokemon(trainer_id: int, req: AddPokemonRequest):
     if current_count >= 6:
         raise HTTPException(status_code=400, detail="Trainer already has 6 Pokémon (maximum team size)")
 
-    # Validate pokemon exists
     pokemon_data = fetch_pokemon(req.pokemon_name.lower())
     if not pokemon_data:
         raise HTTPException(status_code=404, detail=f"Pokémon '{req.pokemon_name}' not found")
 
-    # Validate moves exist in pokemon's moveset
-    available_move_names = [m["name"] for m in pokemon_data.get("moves", [])]
     selected_moves = []
     for move_name in req.moves[:4]:
         matching = next((m for m in pokemon_data["moves"] if m["name"] == move_name), None)
@@ -61,7 +66,6 @@ def add_pokemon(trainer_id: int, req: AddPokemonRequest):
             selected_moves.append(matching)
 
     if not selected_moves:
-        # Assign first 4 available moves as fallback
         selected_moves = pokemon_data["moves"][:4]
 
     slot = current_count + 1
@@ -72,3 +76,15 @@ def add_pokemon(trainer_id: int, req: AddPokemonRequest):
         "slot": slot,
         "moves_assigned": [m["name"] for m in selected_moves],
     }
+
+@router.delete("/{trainer_id}/pokemon/{pokemon_id}")
+def remove_pokemon(trainer_id: int, pokemon_id: int):
+    trainer = db.get_trainer(trainer_id)
+    if not trainer:
+        raise HTTPException(status_code=404, detail="Trainer not found")
+    # Verify this pokemon belongs to this trainer
+    owned = any(p["id"] == pokemon_id for p in trainer["pokemon"])
+    if not owned:
+        raise HTTPException(status_code=404, detail="Pokémon not found in this trainer's team")
+    db.remove_pokemon_from_trainer(trainer_id, pokemon_id)
+    return {"message": "Pokémon removed from team"}

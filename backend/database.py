@@ -1,17 +1,24 @@
 import sqlite3
 import json
+import os
 from contextlib import contextmanager
 
-DB_PATH = "pokemon_battle.db"
+# App database (trainers, battles)
+APP_DB_PATH = "pokemon_battle.db"
 
-def get_connection():
-    conn = sqlite3.connect(DB_PATH)
+# Pokémon data database (read-only) — copy poketypes.db next to main.py
+POKEDB_PATH = os.getenv("POKEDB_PATH", "poketypes.db")
+
+# ── App DB ────────────────────────────────────────────────────────────────────
+
+def get_app_connection():
+    conn = sqlite3.connect(APP_DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
 
 @contextmanager
 def db_cursor():
-    conn = get_connection()
+    conn = get_app_connection()
     try:
         cur = conn.cursor()
         yield cur
@@ -21,12 +28,6 @@ def db_cursor():
 
 def init_db():
     with db_cursor() as cur:
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS pokemon_cache (
-                name TEXT PRIMARY KEY,
-                data TEXT NOT NULL
-            )
-        """)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS trainers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,20 +51,23 @@ def init_db():
             )
         """)
 
-def cache_pokemon(name: str, data: dict):
-    with db_cursor() as cur:
-        cur.execute(
-            "INSERT OR REPLACE INTO pokemon_cache (name, data) VALUES (?, ?)",
-            (name, json.dumps(data))
-        )
+# ── Pokémon data DB (read-only) ───────────────────────────────────────────────
 
-def get_cached_pokemon(name: str):
-    with db_cursor() as cur:
-        cur.execute("SELECT data FROM pokemon_cache WHERE name = ?", (name,))
-        row = cur.fetchone()
-        if row:
-            return json.loads(row["data"])
-    return None
+def get_poke_connection():
+    conn = sqlite3.connect(f"file:{POKEDB_PATH}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+@contextmanager
+def poke_cursor():
+    conn = get_poke_connection()
+    try:
+        cur = conn.cursor()
+        yield cur
+    finally:
+        conn.close()
+
+# ── Trainer CRUD ──────────────────────────────────────────────────────────────
 
 def create_trainer(name: str):
     with db_cursor() as cur:
@@ -118,6 +122,8 @@ def count_trainer_pokemon(trainer_id: int):
         row = cur.fetchone()
         return row["cnt"]
 
+# ── Battle storage ────────────────────────────────────────────────────────────
+
 def save_battle(battle_id: str, state: dict):
     with db_cursor() as cur:
         cur.execute(
@@ -132,3 +138,26 @@ def get_battle(battle_id: str):
         if row:
             return json.loads(row["state"])
     return None
+
+def delete_trainer(trainer_id: int):
+    with db_cursor() as cur:
+        cur.execute("DELETE FROM trainer_pokemon WHERE trainer_id = ?", (trainer_id,))
+        cur.execute("DELETE FROM trainers WHERE id = ?", (trainer_id,))
+
+def remove_pokemon_from_trainer(trainer_id: int, pokemon_id: int):
+    with db_cursor() as cur:
+        cur.execute(
+            "DELETE FROM trainer_pokemon WHERE id = ? AND trainer_id = ?",
+            (pokemon_id, trainer_id)
+        )
+        # Re-sequence slots so they stay 1..N
+        cur.execute(
+            "SELECT id FROM trainer_pokemon WHERE trainer_id = ? ORDER BY slot",
+            (trainer_id,)
+        )
+        rows = cur.fetchall()
+        for i, row in enumerate(rows, start=1):
+            cur.execute(
+                "UPDATE trainer_pokemon SET slot = ? WHERE id = ?",
+                (i, row["id"])
+            )

@@ -1,159 +1,157 @@
-import requests
-from database import cache_pokemon, get_cached_pokemon
+"""
+Pokemon service — reads entirely from local poketypes.db.
+No HTTP calls to PokéAPI at runtime.
+Sprites are served from the PokeAPI GitHub sprites CDN.
+"""
+from database import poke_cursor
 
-POKEAPI_BASE = "https://pokeapi.co/api/v2"
+# Base sprite URL from https://github.com/PokeAPI/sprites
+SPRITE_BASE = (
+    "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/official-artwork"
+)
+SPRITE_FALLBACK = (
+    "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon"
+)
 
-# Generation 1-9 national dex ranges
+# Gen 1–9 national dex ranges (base forms only, no mega/gmax)
 VALID_GEN_RANGES = [
-    (1, 151),    # Gen 1
-    (152, 251),  # Gen 2
-    (252, 386),  # Gen 3
-    (387, 493),  # Gen 4
-    (494, 649),  # Gen 5
-    (650, 721),  # Gen 6
-    (722, 809),  # Gen 7
-    (810, 898),  # Gen 8
-    (899, 1010), # Gen 9
+    (1,   151),   # Gen 1
+    (152, 251),   # Gen 2
+    (252, 386),   # Gen 3
+    (387, 493),   # Gen 4
+    (494, 649),   # Gen 5
+    (650, 721),   # Gen 6
+    (722, 809),   # Gen 7
+    (810, 898),   # Gen 8
+    (899, 1010),  # Gen 9
 ]
 
-# Excluded form keywords
-EXCLUDED_KEYWORDS = [
-    "mega", "gmax", "gigantamax", "alola", "galar", "hisui",
-    "totem", "ash-", "battle-bond", "power-construct",
-    "school", "eternal", "starter", "zen", "dusk", "midnight",
-    "original", "confined", "complete", "10", "50",
-    "pirouette", "resolute"
-]
+# Type ID → name mapping (matches poketypes.db types table)
+TYPE_ID_TO_NAME = {
+    1: "normal", 2: "fire", 3: "fighting", 4: "water", 5: "flying",
+    6: "grass", 7: "poison", 8: "electric", 9: "ground", 10: "psychic",
+    11: "rock", 12: "ice", 13: "bug", 14: "dragon", 15: "ghost",
+    16: "dark", 17: "steel", 18: "fairy",
+}
 
-def is_valid_pokemon(name: str, pokemon_id: int) -> bool:
-    name_lower = name.lower()
-    for keyword in EXCLUDED_KEYWORDS:
-        if keyword in name_lower:
-            return False
+
+def _sprite_url(pokemon_id: int) -> str:
+    return f"{SPRITE_BASE}/{pokemon_id}.png"
+
+
+def _is_valid_id(pokemon_id: int) -> bool:
     for start, end in VALID_GEN_RANGES:
         if start <= pokemon_id <= end:
             return True
     return False
 
-def fetch_pokemon(name: str) -> dict:
-    cached = get_cached_pokemon(name.lower())
-    if cached:
-        return cached
 
-    url = f"{POKEAPI_BASE}/pokemon/{name.lower()}"
-    resp = requests.get(url, timeout=10)
-    if resp.status_code == 404:
+def _type_name(type_id) -> str:
+    if type_id is None:
         return None
-    resp.raise_for_status()
-    raw = resp.json()
-
-    pokemon_id = raw["id"]
-    pokemon_name = raw["name"]
-
-    if not is_valid_pokemon(pokemon_name, pokemon_id):
-        return None
-
-    stats = {}
-    for s in raw["stats"]:
-        stat_name = s["stat"]["name"]
-        stats[stat_name] = s["base_stat"]
-
-    types = [t["type"]["name"] for t in raw["types"]]
-
-    # Fetch moves: filter to only level-up or TM moves with power
-    all_moves = []
-    for move_entry in raw["moves"]:
-        for vgd in move_entry["version_group_details"]:
-            if vgd["move_learn_method"]["name"] in ("level-up", "machine", "tutor"):
-                move_name = move_entry["move"]["name"]
-                if move_name not in [m["name"] for m in all_moves]:
-                    all_moves.append({
-                        "name": move_name,
-                        "url": move_entry["move"]["url"]
-                    })
-                break
-
-    # Fetch move details for first 20 candidates to find usable moves
-    usable_moves = []
-    checked = 0
-    for m in all_moves:
-        if checked >= 30 or len(usable_moves) >= 12:
-            break
-        try:
-            move_data = fetch_move_details(m["name"])
-            if move_data:
-                usable_moves.append(move_data)
-        except Exception:
-            pass
-        checked += 1
-
-    sprites = raw.get("sprites", {})
-    sprite_url = (
-        sprites.get("other", {}).get("official-artwork", {}).get("front_default")
-        or sprites.get("front_default")
-    )
-
-    pokemon_data = {
-        "id": pokemon_id,
-        "name": pokemon_name,
-        "stats": stats,
-        "types": types,
-        "moves": usable_moves[:12],
-        "sprite": sprite_url,
-    }
-
-    cache_pokemon(pokemon_name, pokemon_data)
-    return pokemon_data
-
-def fetch_move_details(move_name: str) -> dict:
-    url = f"{POKEAPI_BASE}/move/{move_name}"
-    resp = requests.get(url, timeout=10)
-    if resp.status_code != 200:
-        return None
-    raw = resp.json()
-
-    # Only include moves with power (damaging) or status moves with effect
-    power = raw.get("power")
-    accuracy = raw.get("accuracy")
-    damage_class = raw.get("damage_class", {}).get("name", "")
-    move_type = raw.get("type", {}).get("name", "normal")
-
-    # Include status moves and moves with power >= 30
-    if damage_class == "status":
-        effect_entries = raw.get("effect_entries", [])
-        effect = effect_entries[0]["effect"] if effect_entries else "Status move"
-        return {
-            "name": move_name,
-            "power": 0,
-            "accuracy": accuracy or 100,
-            "type": move_type,
-            "damage_class": "status",
-            "effect": effect[:100],
-        }
-    elif power and power >= 30:
-        return {
-            "name": move_name,
-            "power": power,
-            "accuracy": accuracy or 100,
-            "type": move_type,
-            "damage_class": damage_class,
-            "effect": "",
-        }
-    return None
-
-def search_pokemon(query: str) -> list:
-    """Search pokemon by name prefix"""
-    url = f"{POKEAPI_BASE}/pokemon?limit=2000"
     try:
-        resp = requests.get(url, timeout=15)
-        resp.raise_for_status()
-        all_pokemon = resp.json()["results"]
-        query_lower = query.lower()
-        matches = [
-            p["name"] for p in all_pokemon
-            if query_lower in p["name"]
-            and not any(kw in p["name"] for kw in EXCLUDED_KEYWORDS)
-        ]
-        return matches[:20]
-    except Exception:
-        return []
+        return TYPE_ID_TO_NAME.get(int(type_id), "normal")
+    except (ValueError, TypeError):
+        return "normal"
+
+
+def fetch_pokemon(name: str) -> dict | None:
+    name_clean = name.strip().lower()
+    with poke_cursor() as cur:
+        # Lookup pokemon row (case-insensitive)
+        cur.execute(
+            "SELECT _id, name, real_id, type_a, type_b FROM pokemon WHERE LOWER(name) = ?",
+            (name_clean,)
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+
+        poke_id = row["_id"]
+        real_id = row["real_id"] or poke_id
+
+        if not _is_valid_id(real_id):
+            return None
+
+        # Base stats — prefer basestats_sumo which covers gens 1–9
+        cur.execute(
+            "SELECT hp, atk, def, spatk, spdef, speed FROM basestats_sumo WHERE poke_id = ?",
+            (poke_id,)
+        )
+        stats_row = cur.fetchone()
+        if not stats_row:
+            # Fallback to basestats
+            cur.execute(
+                "SELECT hp, atk, def, spatk, spdef, speed FROM basestats WHERE poke_id = ?",
+                (poke_id,)
+            )
+            stats_row = cur.fetchone()
+
+        if not stats_row:
+            return None
+
+        stats = {
+            "hp":              stats_row["hp"],
+            "attack":          stats_row["atk"],
+            "defense":         stats_row["def"],
+            "special-attack":  stats_row["spatk"],
+            "special-defense": stats_row["spdef"],
+            "speed":           stats_row["speed"],
+        }
+
+        # Types
+        types = [t for t in [_type_name(row["type_a"]), _type_name(row["type_b"])] if t]
+
+        # Moves: learnset_sumo + machines_sumo, damaging preferred, limit 12
+        cur.execute("""
+            SELECT DISTINCT m._id, m.move, m.type, m.category, m.power, m.accuracy
+            FROM (
+                SELECT moveid FROM learnset_sumo WHERE poke_id = ?
+                UNION
+                SELECT moveid FROM machines_sumo WHERE poke_id = ?
+            ) lm
+            JOIN moves m ON m._id = lm.moveid
+            WHERE m.category IN ('Physical','Special','Status')
+              AND (m.power >= 30 OR m.category = 'Status')
+              AND m.accuracy > 0
+            ORDER BY
+              CASE m.category WHEN 'Physical' THEN 0 WHEN 'Special' THEN 1 ELSE 2 END,
+              m.power DESC
+            LIMIT 12
+        """, (poke_id, poke_id))
+        move_rows = cur.fetchall()
+
+        moves = []
+        for mr in move_rows:
+            moves.append({
+                "name":         mr["move"],
+                "power":        mr["power"] or 0,
+                "accuracy":     mr["accuracy"] or 100,
+                "type":         _type_name(mr["type"]),
+                "damage_class": mr["category"].lower() if mr["category"] else "physical",
+                "effect":       "",
+            })
+
+        return {
+            "id":     real_id,
+            "name":   row["name"],
+            "stats":  stats,
+            "types":  types,
+            "moves":  moves,
+            "sprite": _sprite_url(real_id),
+        }
+
+
+def search_pokemon(query: str) -> list[str]:
+    """Search base-form Pokémon by name prefix/substring, gens 1–9 only."""
+    q = f"%{query.strip().lower()}%"
+    with poke_cursor() as cur:
+        cur.execute("""
+            SELECT name, real_id FROM pokemon
+            WHERE LOWER(name) LIKE ?
+              AND real_id BETWEEN 1 AND 1010
+              AND _id = real_id
+            ORDER BY real_id
+            LIMIT 20
+        """, (q,))
+        return [row["name"] for row in cur.fetchall()]

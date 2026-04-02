@@ -1,33 +1,46 @@
 import random
 import math
 from typing import Dict, Any, Optional, List, Tuple
+from functools import lru_cache
+from database import poke_cursor
 
-TYPE_CHART = {
-    "normal":   {"rock": 0.5, "ghost": 0, "steel": 0.5},
-    "fire":     {"fire": 0.5, "water": 0.5, "grass": 2, "ice": 2, "bug": 2, "rock": 0.5, "dragon": 0.5, "steel": 2},
-    "water":    {"fire": 2, "water": 0.5, "grass": 0.5, "ground": 2, "rock": 2, "dragon": 0.5},
-    "electric": {"water": 2, "electric": 0.5, "grass": 0.5, "ground": 0, "flying": 2, "dragon": 0.5},
-    "grass":    {"fire": 0.5, "water": 2, "grass": 0.5, "poison": 0.5, "ground": 2, "flying": 0.5, "bug": 0.5, "rock": 2, "dragon": 0.5, "steel": 0.5},
-    "ice":      {"water": 0.5, "grass": 2, "ice": 0.5, "ground": 2, "flying": 2, "dragon": 2, "steel": 0.5},
-    "fighting": {"normal": 2, "ice": 2, "poison": 0.5, "flying": 0.5, "psychic": 0.5, "bug": 0.5, "rock": 2, "ghost": 0, "dark": 2, "steel": 2, "fairy": 0.5},
-    "poison":   {"grass": 2, "poison": 0.5, "ground": 0.5, "rock": 0.5, "ghost": 0.5, "steel": 0, "fairy": 2},
-    "ground":   {"fire": 2, "electric": 2, "grass": 0.5, "poison": 2, "flying": 0, "bug": 0.5, "rock": 2, "steel": 2},
-    "flying":   {"electric": 0.5, "grass": 2, "fighting": 2, "bug": 2, "rock": 0.5, "steel": 0.5},
-    "psychic":  {"fighting": 2, "poison": 2, "psychic": 0.5, "dark": 0, "steel": 0.5},
-    "bug":      {"fire": 0.5, "grass": 2, "fighting": 0.5, "flying": 0.5, "psychic": 2, "ghost": 0.5, "dark": 2, "steel": 0.5, "fairy": 0.5},
-    "rock":     {"fire": 2, "ice": 2, "fighting": 0.5, "ground": 0.5, "flying": 2, "bug": 2, "steel": 0.5},
-    "ghost":    {"normal": 0, "psychic": 2, "ghost": 2, "dark": 0.5},
-    "dragon":   {"dragon": 2, "steel": 0.5, "fairy": 0},
-    "dark":     {"fighting": 0.5, "psychic": 2, "ghost": 2, "dark": 0.5, "fairy": 0.5},
-    "steel":    {"fire": 0.5, "water": 0.5, "electric": 0.5, "ice": 2, "rock": 2, "steel": 0.5, "fairy": 2},
-    "fairy":    {"fire": 0.5, "fighting": 2, "poison": 0.5, "dragon": 2, "dark": 2, "steel": 0.5},
+# Type name → DB id mapping (matches poketypes.db types table)
+TYPE_NAME_TO_ID = {
+    "normal":1,"fire":2,"fighting":3,"water":4,"flying":5,
+    "grass":6,"poison":7,"electric":8,"ground":9,"psychic":10,
+    "rock":11,"ice":12,"bug":13,"dragon":14,"ghost":15,
+    "dark":16,"steel":17,"fairy":18,
 }
 
+@lru_cache(maxsize=None)
+def _load_effectiveness_table() -> Dict:
+    """Load full type effectiveness from DB once, cache forever."""
+    table: Dict[int, Dict[int, float]] = {}
+    with poke_cursor() as cur:
+        cur.execute("SELECT type_attack, type_defend, x FROM effectiveness")
+        for row in cur.fetchall():
+            atk  = int(row["type_attack"])
+            deff = int(row["type_defend"])
+            raw  = row["x"]
+            if isinstance(raw, str):
+                val = float(raw)
+            else:
+                val = float(raw)
+            table.setdefault(atk, {})[deff] = val
+    return table
+
+
 def get_type_effectiveness(move_type: str, defender_types: list) -> float:
+    table = _load_effectiveness_table()
+    atk_id = TYPE_NAME_TO_ID.get(move_type, 0)
+    if atk_id == 0:
+        return 1.0
     effectiveness = 1.0
-    move_chart = TYPE_CHART.get(move_type, {})
     for def_type in defender_types:
-        effectiveness *= move_chart.get(def_type, 1.0)
+        def_id = TYPE_NAME_TO_ID.get(def_type, 0)
+        if def_id == 0:
+            continue
+        effectiveness *= table.get(atk_id, {}).get(def_id, 1.0)
     return effectiveness
 
 def calculate_damage(attacker: Dict, defender: Dict, move: Dict, seed: Optional[int] = None) -> Dict:

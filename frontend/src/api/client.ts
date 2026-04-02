@@ -23,8 +23,14 @@ export const getAllTrainers = () =>
 export const getTrainer = (id: number) =>
   api.get<Trainer>(`/trainer/${id}`).then(r => r.data);
 
+export const deleteTrainer = (id: number) =>
+  api.delete(`/trainer/${id}`).then(r => r.data);
+
 export const addPokemonToTrainer = (trainerId: number, pokemonName: string, moves: string[]) =>
   api.post(`/trainer/${trainerId}/add-pokemon`, { pokemon_name: pokemonName, moves }).then(r => r.data);
+
+export const removePokemonFromTrainer = (trainerId: number, pokemonId: number) =>
+  api.delete(`/trainer/${trainerId}/pokemon/${pokemonId}`).then(r => r.data);
 
 // Battle
 export const startBattle = (trainerXId: number, trainerYId: number) =>
